@@ -3,71 +3,210 @@
 package spatial
 
 import (
-	"encoding/binary"
-	"errors"
+	"fmt"
 	"math"
-
-	"github.com/daniarleagk/paloo_db/utils"
 )
 
+const Resolution2D8 = 8
+const Resolution2D16 = 16
+const Resolution2D21 = 21
+const Resolution2D32 = 32
+const NormF8 = 255.0
+const NormF16 = 65535.0
+const NormF21 = 2097151.0
+const NormF32 = 4294967295.0
+
+// DoublePoint represents a point in N-dimensional space using double-precision floating-point numbers.
+type DoublePoint []float64
+
+func (d DoublePoint) Dimension() int {
+	return len(d)
+}
+
+// DoublePointRectangle represents a rectangle in N-dimensional space using double-precision floating-point numbers.
 type DoublePointRectangle struct {
-	dimension uint16
-	lowLeft   []float64
-	upRight   []float64
+	LowLeft DoublePoint // non private to allow direct access
+	UpRight DoublePoint // non private to allow direct access
 }
 
-func getDoublePointRectangleDeSerFunc() utils.DeSerFunc[DoublePointRectangle] {
-	return func(data []byte) (st DoublePointRectangle, err error) {
-		// read the dimension
-		// slice first 2 bytes
-		dimension := binary.BigEndian.Uint16(data[:2])
-		if capacity := 2 + 2*int(dimension)*8; len(data) < capacity {
-			return DoublePointRectangle{}, errors.New("not enough capacity to build ")
+// returns  a pointer to a new DoublePointRectangle
+func NewDoublePointRectangle(lowLeft, upRight DoublePoint) (*DoublePointRectangle, error) {
+	if lowLeft.Dimension() != upRight.Dimension() {
+		return nil, fmt.Errorf("length of lowLeft and upRight must match")
+	}
+	return &DoublePointRectangle{
+		LowLeft: lowLeft,
+		UpRight: upRight,
+	}, nil
+}
+
+func (r *DoublePointRectangle) Dimension() int {
+	return r.LowLeft.Dimension()
+}
+
+// Union returns a new DoublePointRectangle that is the union of the current rectangle and another rectangle.
+func (r *DoublePointRectangle) Union(other *DoublePointRectangle) *DoublePointRectangle {
+	if r.Dimension() != other.Dimension() {
+		// change to error return?
+		panic("Dimensions must match for union operation")
+	}
+	newLowLeft := make(DoublePoint, r.Dimension())
+	newUpRight := make(DoublePoint, r.Dimension())
+	for i := 0; i < r.Dimension(); i++ {
+		if r.LowLeft[i] < other.LowLeft[i] {
+			newLowLeft[i] = r.LowLeft[i]
+		} else {
+			newLowLeft[i] = other.LowLeft[i]
 		}
-		// read the lower left point
-		lowLeft := make([]float64, dimension)
-		// start from 2 and read 8 bytes at a time
-		startIndex := 2
-		for i := 0; i < int(dimension); i++ {
-			i64Bits := binary.BigEndian.Uint64(data[startIndex+i*8 : startIndex+(i+1)*8])
-			lowLeft[i] = math.Float64frombits(i64Bits)
+		if r.UpRight[i] > other.UpRight[i] {
+			newUpRight[i] = r.UpRight[i]
+		} else {
+			newUpRight[i] = other.UpRight[i]
 		}
-		// read the upper right point at position 2 + dimension * 8
-		startIndex = 2 + int(dimension)*8
-		upRight := make([]float64, dimension)
-		for i := 0; i < int(dimension); i++ {
-			i64Bits := binary.BigEndian.Uint64(data[startIndex+i*8 : startIndex+(i+1)*8])
-			upRight[i] = math.Float64frombits(i64Bits)
-		}
-		return DoublePointRectangle{
-			dimension: dimension,
-			lowLeft:   lowLeft,
-			upRight:   upRight,
-		}, nil
+	}
+	return &DoublePointRectangle{
+		LowLeft: newLowLeft,
+		UpRight: newUpRight,
 	}
 }
 
-func getDoublePointRectangleSerFunc() utils.SerFunc[DoublePointRectangle] {
-	return func(s DoublePointRectangle, data []byte) (n int, err error) {
-		// length and capacity of the slice is 2 + 2 * dimension * 8
-		capacity := 2 + 2*int(s.dimension)*8
-		if cap(data) < capacity {
-			return 0, errors.New("not enough capacity")
-		}
-		// write the dimension
-		binary.BigEndian.PutUint16(data[:2], s.dimension)
-		// write the lower left point
-		startIndex := 2
-		for i := 0; i < int(s.dimension); i++ {
-			i64Bits := math.Float64bits(s.lowLeft[i])
-			binary.BigEndian.PutUint64(data[startIndex+i*8:startIndex+(i+1)*8], i64Bits)
-		}
-		// write the upper right point
-		startIndex = 2 + int(s.dimension)*8
-		for i := 0; i < int(s.dimension); i++ {
-			i64Bits := math.Float64bits(s.upRight[i])
-			binary.BigEndian.PutUint64(data[startIndex+i*8:startIndex+(i+1)*8], i64Bits)
-		}
-		return capacity, nil
+func (r *DoublePointRectangle) UnionInPlace(other *DoublePointRectangle) {
+	if r.Dimension() != other.Dimension() {
+		panic("Dimensions must match for union operation")
 	}
+	for i := 0; i < r.Dimension(); i++ {
+		if r.LowLeft[i] > other.LowLeft[i] {
+			r.LowLeft[i] = other.LowLeft[i]
+		}
+		if r.UpRight[i] < other.UpRight[i] {
+			r.UpRight[i] = other.UpRight[i]
+		}
+	}
+}
+
+// Intersects checks if the current rectangle intersects with another rectangle.
+func (r *DoublePointRectangle) Intersects(other *DoublePointRectangle) bool {
+	if len(r.LowLeft) != len(other.LowLeft) {
+		return false
+	}
+	// negate interval overlap condition
+	// ovrelap other.lowLeft[i] <= r.upRight[i] && other.upRight[i] >= r.lowLeft[i]
+	// negate   !(other.lowLeft[i] <= r.upRight[i]) || !( other.upRight[i] >= r.lowLeft[i])
+	// which is equivalent to
+	// other.lowLeft[i] > r.upRight[i] || other.upRight[i] < r.lowLeft[i]
+	for i := 0; i < len(r.LowLeft); i++ {
+		if other.LowLeft[i] > r.UpRight[i] || other.UpRight[i] < r.LowLeft[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// Area calculates the area (or hypervolume) of the rectangle.
+func (r *DoublePointRectangle) Area() float64 {
+	area := 1.0
+	dimension := r.Dimension()
+	for i := 0; i < dimension; i++ {
+		area *= r.UpRight[i] - r.LowLeft[i]
+	}
+	return area
+}
+
+// Clone creates a deep copy of the DoublePointRectangle.
+func (r *DoublePointRectangle) Clone() *DoublePointRectangle {
+	newLowLeft := make([]float64, r.Dimension())
+	newUpRight := make([]float64, r.Dimension())
+	copy(newLowLeft, r.LowLeft)
+	copy(newUpRight, r.UpRight)
+	return &DoublePointRectangle{
+		LowLeft: newLowLeft,
+		UpRight: newUpRight,
+	}
+}
+
+// Center calculates the center point of the rectangle.
+func (r *DoublePointRectangle) Center() DoublePoint {
+	center := make(DoublePoint, r.Dimension())
+	for i := 0; i < r.Dimension(); i++ {
+		center[i] = (r.LowLeft[i] + r.UpRight[i]) / 2
+	}
+	return center
+}
+
+func (r *DoublePointRectangle) Equals(other *DoublePointRectangle) bool {
+	if r.Dimension() != other.Dimension() {
+		return false
+	}
+	for i := 0; i < r.Dimension(); i++ {
+		if r.LowLeft[i] != other.LowLeft[i] || r.UpRight[i] != other.UpRight[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func (r *DoublePointRectangle) String() string {
+	result := "DoublePointRectangle{"
+	result += "lowLeft: ["
+	for i, val := range r.LowLeft {
+		if i > 0 {
+			result += ", "
+		}
+		result += fmt.Sprintf("%f", val)
+	}
+	result += "], "
+	result += "upRight: ["
+	for i, val := range r.UpRight {
+		if i > 0 {
+			result += ", "
+		}
+		result += fmt.Sprintf("%f", val)
+	}
+	result += "]"
+	result += "}"
+	return result
+}
+
+func GetPeanoCurveValue2D32(point DoublePoint, globalRect *DoublePointRectangle) uint64 {
+	// normalize
+	var x, y uint64
+	var peanoValueZ uint64
+	wx := globalRect.UpRight[0] - globalRect.LowLeft[0]
+	wy := globalRect.UpRight[1] - globalRect.LowLeft[1]
+	if wx != 0.0 {
+		x = uint64(math.Round(math.Max(0.0, math.Min(1.0, (point[0]-globalRect.LowLeft[0])/wx)) * NormF32))
+	}
+	if wy != 0.0 {
+		y = uint64(math.Round(math.Max(0.0, math.Min(1.0, (point[1]-globalRect.LowLeft[1])/wy)) * NormF32))
+	}
+	for i := 0; i < Resolution2D32; i++ {
+		// shift scanner
+		bitX := (x >> i) & 1
+		bitY := (y >> i) & 1
+		xy := (bitY << 1) | bitX
+		peanoValueZ |= (xy << uint(2*i))
+	}
+	return peanoValueZ
+}
+
+func GetPeanoCurveValue2D16(point DoublePoint, globalRect *DoublePointRectangle) uint64 {
+	// normalize
+	var x, y uint64
+	var peanoValueZ uint64
+	wx := globalRect.UpRight[0] - globalRect.LowLeft[0]
+	wy := globalRect.UpRight[1] - globalRect.LowLeft[1]
+	if wx != 0.0 {
+		x = uint64(math.Round(math.Max(0.0, math.Min(1.0, (point[0]-globalRect.LowLeft[0])/wx)) * NormF16))
+	}
+	if wy != 0.0 {
+		y = uint64(math.Round(math.Max(0.0, math.Min(1.0, (point[1]-globalRect.LowLeft[1])/wy)) * NormF16))
+	}
+	for i := 0; i < Resolution2D16; i++ {
+		// shift scanner
+		bitX := (x >> i) & 1
+		bitY := (y >> i) & 1
+		xy := (bitY << 1) | bitX
+		peanoValueZ |= (xy << uint(2*i))
+	}
+	return peanoValueZ
 }
