@@ -7,6 +7,15 @@ import (
 	"math"
 )
 
+const Resolution2D8 = 8
+const Resolution2D16 = 16
+const Resolution2D21 = 21
+const Resolution2D32 = 32
+const NormF8 = 255.0
+const NormF16 = 65535.0
+const NormF21 = 2097151.0
+const NormF32 = 4294967295.0
+
 // DoublePoint represents a point in N-dimensional space using double-precision floating-point numbers.
 type DoublePoint []float64
 
@@ -157,15 +166,6 @@ func (r *DoublePointRectangle) String() string {
 	result += "}"
 	return result
 }
-
-const Resolution2D8 = 8
-const Resolution2D16 = 16
-const Resolution2D21 = 21
-const Resolution2D32 = 32
-const NormF8 = 255.0
-const NormF16 = 65535.0
-const NormF21 = 2097151.0
-const NormF32 = 4294967295.0
 
 func GetPeanoCurveValue2D32(point DoublePoint, globalRect *DoublePointRectangle) uint64 {
 	// normalize

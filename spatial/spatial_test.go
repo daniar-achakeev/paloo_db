@@ -74,3 +74,25 @@ func TestDoublePointRectangleIntersectTest(t *testing.T) {
 		})
 	}
 }
+
+func TestGetPeanoCurveValue2D32(t *testing.T) {
+	globalRect, _ := NewDoublePointRectangle([]float64{0, 0}, []float64{1 << 32, 1 << 32})
+	point1 := DoublePoint{10, 5}
+	value1 := GetPeanoCurveValue2D32(point1, globalRect)
+	t.Logf("Peano curve value for point1: %d", value1)
+	if value1 != 102 {
+		t.Errorf("Expected Peano curve value 102, but got %d", value1)
+	}
+	point2 := DoublePoint{1, 2}
+	value2 := GetPeanoCurveValue2D32(point2, globalRect)
+	t.Logf("Peano curve value for point2: %d", value2)
+	if value2 != 9 {
+		t.Errorf("Expected Peano curve value 9, but got %d", value2)
+	}
+	point3 := DoublePoint{3, 3}
+	value3 := GetPeanoCurveValue2D32(point3, globalRect)
+	t.Logf("Peano curve value for point3: %d", value3)
+	if value3 != 15 {
+		t.Errorf("Expected Peano curve value 15, but got %d", value3)
+	}
+}
