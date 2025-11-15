@@ -203,32 +203,33 @@ func GOPTPartitions(rectangles []DoublePointRectangle, b int, B int) []Bucket {
 	for i := 0; i < b-1; i++ {
 		costs[i].COpt = math.MaxFloat64
 	}
-	fmt.Println(costs)
 	// main loop
-	fmt.Println("Input", rectangles)
 	for i := b - 1; i < len(rectangles); i++ {
-		fmt.Println("current i", i)
 		precomputeRectangles(rectangles, buffer, i, b, B)
-		fmt.Println("Precompute Buffer", buffer)
 		// now go back to find the arg min
 		// we start from i
 		costs[i].COpt = math.MaxFloat64
-		// for the sake of performance old style looping
+		// old style looping
 		for j := 0; j < bufLen; j++ {
 			// now pos 0 is equal to i - B+ 1 there is the rectangle of size B and its area
-			prevIdxCosts := i - B - 1 + j
-			fmt.Println("previdx for ", i, prevIdxCosts)
+			prevIdx := i - B + j
 			// specialCase
-			if prevIdxCosts >= 0 {
+			if prevIdx == -1 {
+				costs[i].COpt = buffer[j].HyperVolume()
+				costs[i].R = buffer[j].Clone()
+				costs[i].prevIndex = prevIdx
+				continue
+			}
+			if prevIdx >= 0 {
 				// check costs only if there are not max
 				// all indexes < b-1 are max
-				prevCost := costs[prevIdxCosts].COpt
+				prevCost := costs[prevIdx].COpt
 				if prevCost != math.MaxFloat64 {
 					prevCost += buffer[j].HyperVolume()
 					if prevCost < costs[i].COpt {
 						costs[i].COpt = prevCost
 						costs[i].R = buffer[j].Clone()
-						costs[i].prevIndex = prevIdxCosts
+						costs[i].prevIndex = prevIdx
 					}
 				}
 			}
@@ -242,19 +243,22 @@ func GOPTPartitions(rectangles []DoublePointRectangle, b int, B int) []Bucket {
 func precomputeRectangles(sourceSlice []DoublePointRectangle, buffeSlice []DoublePointRectangle, startIndex int, b int, B int) {
 	// take rectangle on the current position
 	// assertion .(T)
-	universe := sourceSlice[startIndex].Clone()
+	var universe DoublePointRectangle
 	sj := len(buffeSlice) - 1
 	// so now we go backwards and call union
-	fmt.Println("current startIndex compute universe", startIndex)
 	for i := 0; i < B; i++ {
-		fmt.Println("")
-		if i < 0 {
-			break // that should catch the case at very beginning
+		nextIdx := startIndex - i
+		if nextIdx < 0 {
+			break
 		}
-		if startIndex-i+1 >= b { // if we are below the minimum
+		if i == 0 {
+			universe = sourceSlice[nextIdx].Clone()
+		} else {
+			universe.Union(sourceSlice[nextIdx].Clone())
+		}
+		if i+1 >= b {
 			buffeSlice[sj] = universe.Clone()
 			sj--
 		}
-		universe.Union(sourceSlice[i].Clone())
 	}
 }

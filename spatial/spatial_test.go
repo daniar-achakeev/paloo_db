@@ -87,11 +87,13 @@ func TestGOPTPartitioning(t *testing.T) {
 	r7, _ := NewDoublePointRectangle([]float64{7, 2}, []float64{7, 2})
 	r8, _ := NewDoublePointRectangle([]float64{0, 5}, []float64{0, 5})
 	r9, _ := NewDoublePointRectangle([]float64{0, 7}, []float64{0, 7})
-	r10, _ := NewDoublePointRectangle([]float64{4, 6}, []float64{4, 6})
-	r11, _ := NewDoublePointRectangle([]float64{7, 7}, []float64{7, 7})
+	r10, _ := NewDoublePointRectangle([]float64{7, 4}, []float64{7, 4})
+	r11, _ := NewDoublePointRectangle([]float64{7, 5}, []float64{7, 5})
+	r12, _ := NewDoublePointRectangle([]float64{4, 6}, []float64{4, 6})
+	r13, _ := NewDoublePointRectangle([]float64{7, 7}, []float64{7, 7})
 	// expected
-	expectedRectangles := []DoublePointRectangle{*r1, *r2, *r3, *r4, *r5, *r6, *r7, *r8, *r9, *r10, *r11}
-	rectangles := []DoublePointRectangle{*r11, *r10, *r9, *r8, *r7, *r6, *r5, *r4, *r3, *r2, *r1}
+	expectedRectangles := []DoublePointRectangle{*r1, *r2, *r3, *r4, *r5, *r6, *r7, *r8, *r9, *r10, *r11, *r12, *r13}
+	rectangles := []DoublePointRectangle{*r12, *r13, *r11, *r10, *r9, *r8, *r7, *r6, *r5, *r4, *r3, *r2, *r1}
 	globalRect, _ := NewDoublePointRectangle([]float64{0, 0}, []float64{1 << 32, 1 << 32})
 	for _, r := range rectangles {
 		center := r.Center()
@@ -114,6 +116,8 @@ func TestGOPTPartitioning(t *testing.T) {
 	}
 	b, B := 2, 4
 	costs := GOPTPartitions(rectangles, b, B)
-	t.Log("costs", costs)
+	for idx, bucket := range costs {
+		t.Log("Bucket", bucket, idx)
+	}
 
 }

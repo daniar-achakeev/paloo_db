@@ -4,7 +4,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/daniarleagk/paloo_db/io"
+	"github.com/daniar-achakeev/paloo_db/io"
 )
 
 // this function is meant to be called with a -race flag
