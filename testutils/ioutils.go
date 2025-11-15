@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/daniarleagk/paloo_db/io"
-	"github.com/daniarleagk/paloo_db/utils"
+	"github.com/daniar-achakeev/paloo_db/io"
+	"github.com/daniar-achakeev/paloo_db/utils"
 )
 
 // for testing purposes

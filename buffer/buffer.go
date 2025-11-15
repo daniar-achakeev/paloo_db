@@ -12,9 +12,9 @@ import (
 	"sync/atomic"
 	"unsafe"
 
-	"github.com/daniarleagk/paloo_db/io"
-	"github.com/daniarleagk/paloo_db/utils"
-	"github.com/daniarleagk/paloo_db/wal"
+	"github.com/daniar-achakeev/paloo_db/io"
+	"github.com/daniar-achakeev/paloo_db/utils"
+	"github.com/daniar-achakeev/paloo_db/wal"
 )
 
 var ErrNoEmptyOrEvicted = errors.New("buffer: no empty or evicted frames available")

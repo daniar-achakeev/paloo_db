@@ -18,8 +18,8 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/daniarleagk/paloo_db/io"
-	"github.com/daniarleagk/paloo_db/utils"
+	"github.com/daniar-achakeev/paloo_db/io"
+	"github.com/daniar-achakeev/paloo_db/utils"
 )
 
 // Merger is an interface for merging sorted sequences.

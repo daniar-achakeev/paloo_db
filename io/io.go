@@ -12,7 +12,7 @@ import (
 	"path/filepath"
 	"sync"
 
-	"github.com/daniarleagk/paloo_db/utils"
+	"github.com/daniar-achakeev/paloo_db/utils"
 )
 
 // DbObjectId is an interface for database object identifiers

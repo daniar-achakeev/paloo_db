@@ -44,33 +44,7 @@ func (r *DoublePointRectangle) Dimension() int {
 	return r.LowLeft.Dimension()
 }
 
-// Union returns a new DoublePointRectangle that is the union of the current rectangle and another rectangle.
-func (r *DoublePointRectangle) Union(other *DoublePointRectangle) *DoublePointRectangle {
-	if r.Dimension() != other.Dimension() {
-		// change to error return?
-		panic("Dimensions must match for union operation")
-	}
-	newLowLeft := make(DoublePoint, r.Dimension())
-	newUpRight := make(DoublePoint, r.Dimension())
-	for i := 0; i < r.Dimension(); i++ {
-		if r.LowLeft[i] < other.LowLeft[i] {
-			newLowLeft[i] = r.LowLeft[i]
-		} else {
-			newLowLeft[i] = other.LowLeft[i]
-		}
-		if r.UpRight[i] > other.UpRight[i] {
-			newUpRight[i] = r.UpRight[i]
-		} else {
-			newUpRight[i] = other.UpRight[i]
-		}
-	}
-	return &DoublePointRectangle{
-		LowLeft: newLowLeft,
-		UpRight: newUpRight,
-	}
-}
-
-func (r *DoublePointRectangle) UnionInPlace(other *DoublePointRectangle) {
+func (r *DoublePointRectangle) Union(other DoublePointRectangle) {
 	if r.Dimension() != other.Dimension() {
 		panic("Dimensions must match for union operation")
 	}
@@ -85,7 +59,7 @@ func (r *DoublePointRectangle) UnionInPlace(other *DoublePointRectangle) {
 }
 
 // Intersects checks if the current rectangle intersects with another rectangle.
-func (r *DoublePointRectangle) Intersects(other *DoublePointRectangle) bool {
+func (r *DoublePointRectangle) Intersects(other DoublePointRectangle) bool {
 	if len(r.LowLeft) != len(other.LowLeft) {
 		return false
 	}
@@ -102,8 +76,8 @@ func (r *DoublePointRectangle) Intersects(other *DoublePointRectangle) bool {
 	return true
 }
 
-// Area calculates the area (or hypervolume) of the rectangle.
-func (r *DoublePointRectangle) Area() float64 {
+// HyperVolume calculates the area if 2D (or hypervolume) of the rectangle.
+func (r *DoublePointRectangle) HyperVolume() float64 {
 	area := 1.0
 	dimension := r.Dimension()
 	for i := 0; i < dimension; i++ {
@@ -113,12 +87,12 @@ func (r *DoublePointRectangle) Area() float64 {
 }
 
 // Clone creates a deep copy of the DoublePointRectangle.
-func (r *DoublePointRectangle) Clone() *DoublePointRectangle {
+func (r *DoublePointRectangle) Clone() DoublePointRectangle {
 	newLowLeft := make([]float64, r.Dimension())
 	newUpRight := make([]float64, r.Dimension())
 	copy(newLowLeft, r.LowLeft)
 	copy(newUpRight, r.UpRight)
-	return &DoublePointRectangle{
+	return DoublePointRectangle{
 		LowLeft: newLowLeft,
 		UpRight: newUpRight,
 	}
@@ -209,4 +183,82 @@ func GetPeanoCurveValue2D16(point DoublePoint, globalRect *DoublePointRectangle)
 		peanoValueZ |= (xy << uint(2*i))
 	}
 	return peanoValueZ
+}
+
+type Bucket struct {
+	R         DoublePointRectangle // union of the rectangle
+	COpt      float64              // current sum opt value
+	prevIndex int                  // index of the previous bucket
+}
+
+// GoptHyperVolume computes an gopt() function on a set of rectangles
+// using dynamic programming see Achakeev, Seeger, Widmayer et. Al.
+// "Sort-based query-adaptive loading of R-trees" CIKM 2012
+// we minimize sum of hypervolumes
+func GOPTPartitions(rectangles []DoublePointRectangle, b int, B int) []Bucket {
+	bufLen := B - b + 1
+	buffer := make([]DoublePointRectangle, bufLen)
+	costs := make([]Bucket, len(rectangles))
+	// initialize until index b-1
+	for i := 0; i < b-1; i++ {
+		costs[i].COpt = math.MaxFloat64
+	}
+	// main loop
+	for i := b - 1; i < len(rectangles); i++ {
+		precomputeRectangles(rectangles, buffer, i, b, B)
+		// now go back to find the arg min
+		// we start from i
+		costs[i].COpt = math.MaxFloat64
+		// old style looping
+		for j := 0; j < bufLen; j++ {
+			// now pos 0 is equal to i - B+ 1 there is the rectangle of size B and its area
+			prevIdx := i - B + j
+			// specialCase
+			if prevIdx == -1 {
+				costs[i].COpt = buffer[j].HyperVolume()
+				costs[i].R = buffer[j].Clone()
+				costs[i].prevIndex = prevIdx
+				continue
+			}
+			if prevIdx >= 0 {
+				// check costs only if there are not max
+				// all indexes < b-1 are max
+				prevCost := costs[prevIdx].COpt
+				if prevCost != math.MaxFloat64 {
+					prevCost += buffer[j].HyperVolume()
+					if prevCost < costs[i].COpt {
+						costs[i].COpt = prevCost
+						costs[i].R = buffer[j].Clone()
+						costs[i].prevIndex = prevIdx
+					}
+				}
+			}
+		}
+	}
+	return costs
+}
+
+// precomputeVolumes function runs from position t to t-B to compute b till B sized volumes
+// subfunction mutates the [B-b+1] length
+func precomputeRectangles(sourceSlice []DoublePointRectangle, buffeSlice []DoublePointRectangle, startIndex int, b int, B int) {
+	// take rectangle on the current position
+	// assertion .(T)
+	var universe DoublePointRectangle
+	sj := len(buffeSlice) - 1
+	// so now we go backwards and call union
+	for i := 0; i < B; i++ {
+		nextIdx := startIndex - i
+		if nextIdx < 0 {
+			break
+		}
+		if i == 0 {
+			universe = sourceSlice[nextIdx].Clone()
+		} else {
+			universe.Union(sourceSlice[nextIdx].Clone())
+		}
+		if i+1 >= b {
+			buffeSlice[sj] = universe.Clone()
+			sj--
+		}
+	}
 }

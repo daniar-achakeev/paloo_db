@@ -9,10 +9,10 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/daniarleagk/paloo_db/io"
-	"github.com/daniarleagk/paloo_db/testutils"
-	"github.com/daniarleagk/paloo_db/utils"
-	"github.com/daniarleagk/paloo_db/wal"
+	"github.com/daniar-achakeev/paloo_db/io"
+	"github.com/daniar-achakeev/paloo_db/testutils"
+	"github.com/daniar-achakeev/paloo_db/utils"
+	"github.com/daniar-achakeev/paloo_db/wal"
 )
 
 type Dev0WriteAheadLogger struct{}

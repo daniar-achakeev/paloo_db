@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/daniarleagk/paloo_db/io"
+	"github.com/daniar-achakeev/paloo_db/io"
 )
 
 func permutate[T any](slice []T) []T {
