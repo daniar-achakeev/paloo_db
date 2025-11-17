@@ -4,6 +4,7 @@ package spatial
 
 import (
 	"fmt"
+	"iter"
 	"math"
 )
 
@@ -107,7 +108,7 @@ func (r *DoublePointRectangle) Center() DoublePoint {
 	return center
 }
 
-func (r *DoublePointRectangle) Equals(other *DoublePointRectangle) bool {
+func (r *DoublePointRectangle) Equals(other DoublePointRectangle) bool {
 	if r.Dimension() != other.Dimension() {
 		return false
 	}
@@ -141,6 +142,7 @@ func (r *DoublePointRectangle) String() string {
 	return result
 }
 
+// GetPeanoCurveValue2D32 : computes 32 bit 2D peano bit interleaving
 func GetPeanoCurveValue2D32(point DoublePoint, globalRect *DoublePointRectangle) uint64 {
 	// normalize
 	var x, y uint64
@@ -163,6 +165,7 @@ func GetPeanoCurveValue2D32(point DoublePoint, globalRect *DoublePointRectangle)
 	return peanoValueZ
 }
 
+// GetPeanoCurveValue2D16 16 Bit Z-Curve
 func GetPeanoCurveValue2D16(point DoublePoint, globalRect *DoublePointRectangle) uint64 {
 	// normalize
 	var x, y uint64
@@ -185,10 +188,21 @@ func GetPeanoCurveValue2D16(point DoublePoint, globalRect *DoublePointRectangle)
 	return peanoValueZ
 }
 
+// Bucket is internal sturct to hold cost and prev index
 type Bucket struct {
 	R         DoublePointRectangle // union of the rectangle
 	COpt      float64              // current sum opt value
 	prevIndex int                  // index of the previous bucket
+}
+
+// MbrPartition holds minimal bounding rectangle and
+type MbrPartition struct {
+	Mbr       DoublePointRectangle   // minimal bounding rectangle
+	Partition []DoublePointRectangle // rectangle inside MBR
+}
+
+func (p MbrPartition) String() string {
+	return fmt.Sprintf("MBR %s partition %v ", &p.Mbr, p.Partition)
 }
 
 // GoptHyperVolume computes an gopt() function on a set of rectangles
@@ -205,9 +219,9 @@ func GOPTPartitions(rectangles []DoublePointRectangle, b int, B int) []Bucket {
 	}
 	// main loop
 	for i := b - 1; i < len(rectangles); i++ {
+		// sub routine for readability
 		precomputeRectangles(rectangles, buffer, i, b, B)
 		// now go back to find the arg min
-		// we start from i
 		costs[i].COpt = math.MaxFloat64
 		// old style looping
 		for j := 0; j < bufLen; j++ {
@@ -261,4 +275,40 @@ func precomputeRectangles(sourceSlice []DoublePointRectangle, buffeSlice []Doubl
 			sj--
 		}
 	}
+}
+
+// DevisePartitioning from cost array and source partitioning
+func DevisePartitioning(rectangles []DoublePointRectangle, buckets []Bucket, b int) []MbrPartition {
+	idx := len(buckets) - 1
+	partitions := make([]MbrPartition, 0, (idx+1)/b) // prealloacate with max cap
+	for {
+		currentBucket := buckets[idx]
+		prevIdx := currentBucket.prevIndex
+		mbrPartition := MbrPartition{
+			Mbr:       currentBucket.R,
+			Partition: rectangles[prevIdx+1 : idx+1], // inclusive
+		}
+		partitions = append(partitions, mbrPartition)
+		idx = prevIdx
+		if prevIdx < 0 {
+			break
+		}
+	}
+	return partitions
+
+}
+
+// ComputeUniverse returns MBR of the iterator
+func ComputeUniverse(recIter iter.Seq[DoublePointRectangle]) DoublePointRectangle {
+	head := true
+	universe := DoublePointRectangle{}
+	for rec := range recIter {
+		if head {
+			universe = rec.Clone()
+			head = false
+			continue
+		}
+		universe.Union(rec)
+	}
+	return universe
 }

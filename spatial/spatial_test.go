@@ -1,9 +1,111 @@
 package spatial
 
 import (
+	"encoding/xml"
+	"fmt"
+	"math"
+	"os"
 	"slices"
 	"testing"
 )
+
+// represents the <rect> element.
+type Rectangle struct {
+	XMLName     xml.Name `xml:"rect"`
+	X           string   `xml:"x,attr"`
+	Y           string   `xml:"y,attr"`
+	Width       string   `xml:"width,attr"`
+	Height      string   `xml:"height,attr"`
+	Fill        string   `xml:"fill,attr"`
+	Stroke      string   `xml:"stroke,attr"`
+	StrokeWidth string   `xml:"stroke-width,attr"`
+}
+
+type Svg struct {
+	XMLName xml.Name    `xml:"svg"`
+	Width   string      `xml:"width,attr"`
+	Height  string      `xml:"height,attr"`
+	ViewBox string      `xml:"viewBox,attr"`
+	Xmlns   string      `xml:"xmlns,attr"`
+	Rects   []Rectangle `xml:"rect"`
+}
+
+func (s Svg) writeSvg(path string) error {
+	mBytes, error := xml.MarshalIndent(s, "", "  ")
+	if error != nil {
+		return fmt.Errorf("error marshalling svg: %v", error)
+	}
+	xmlOutput := []byte(xml.Header + string(mBytes))
+	error = os.WriteFile(path, xmlOutput, 0644)
+	if error != nil {
+		return fmt.Errorf("error writing file: %v", error)
+	}
+	return nil
+}
+
+const D2 = 2 // two dimensions
+
+// Writes
+type SVGPainter struct {
+	height        int
+	width         int
+	svgRectangles []Rectangle
+	length        [D2]float64
+	uni           DoublePointRectangle
+}
+
+func NewSVGPainter(width, height int, uni DoublePointRectangle) *SVGPainter {
+	length := [D2]float64{0.0, 0.0}
+	for i := range 2 {
+		length[i] = uni.UpRight[i] - uni.LowLeft[i]
+	}
+	svgRectangles := make([]Rectangle, 0, 256)
+	return &SVGPainter{
+		height:        height,
+		width:         width,
+		svgRectangles: svgRectangles,
+		length:        length,
+		uni:           uni,
+	}
+}
+
+func (p *SVGPainter) AddRectangle(rec DoublePointRectangle, stroke string, strokeWidth string) {
+	lP := make([]int, 2)
+	rP := make([]int, 2)
+	lP[0] = int(math.Round(math.Max(0.0, math.Min(1.0, (rec.LowLeft[0]-p.uni.LowLeft[0])/p.length[0])) * float64(p.width)))
+	lP[1] = int(math.Round(math.Max(0.0, math.Min(1.0, (rec.LowLeft[1]-p.uni.LowLeft[1])/p.length[1])) * float64(p.height)))
+	rP[0] = int(math.Round(math.Max(0.0, math.Min(1.0, (rec.UpRight[0]-p.uni.LowLeft[0])/p.length[0])) * float64(p.width)))
+	rP[1] = int(math.Round(math.Max(0.0, math.Min(1.0, (rec.UpRight[1]-p.uni.LowLeft[1])/p.length[1])) * float64(p.height)))
+	width := rP[0] - lP[0]
+	if width == 0 {
+		width = 1 // for points
+	}
+	height := rP[1] - lP[1]
+	if height == 0 {
+		height = 1
+	}
+	svgRect := Rectangle{
+		X:           fmt.Sprintf("%d", lP[0]),
+		Y:           fmt.Sprintf("%d", p.height-lP[1]-height),
+		Width:       fmt.Sprintf("%d", width),
+		Height:      fmt.Sprintf("%d", height),
+		Fill:        "none",
+		Stroke:      stroke,
+		StrokeWidth: strokeWidth,
+	}
+	p.svgRectangles = append(p.svgRectangles, svgRect)
+}
+
+func (p *SVGPainter) SaveToFile(path string) error {
+	canvas := Svg{
+		Width:   fmt.Sprintf("%d", p.width),
+		Height:  fmt.Sprintf("%d", p.height),
+		ViewBox: fmt.Sprintf("%d %d %d %d", 0, 0, p.width+2, p.height+2),
+		Xmlns:   "http://www.w3.org/2000/svg",
+		Rects:   p.svgRectangles,
+	}
+	return canvas.writeSvg(path)
+}
 
 func TestDoublePointRectangleIntersectTest(t *testing.T) {
 	r1, _ := NewDoublePointRectangle([]float64{2, 2}, []float64{6, 6})
@@ -77,7 +179,8 @@ func TestGetPeanoCurveValue2D32(t *testing.T) {
 	}
 }
 
-func TestGOPTPartitioning(t *testing.T) {
+// reuturns rectangles and expected z-order
+func getTestPeanoOrderRectangles() ([]DoublePointRectangle, []DoublePointRectangle) {
 	r1, _ := NewDoublePointRectangle([]float64{0, 0}, []float64{0, 0})
 	r2, _ := NewDoublePointRectangle([]float64{3, 0}, []float64{3, 0})
 	r3, _ := NewDoublePointRectangle([]float64{2, 1}, []float64{2, 1})
@@ -94,6 +197,52 @@ func TestGOPTPartitioning(t *testing.T) {
 	// expected
 	expectedRectangles := []DoublePointRectangle{*r1, *r2, *r3, *r4, *r5, *r6, *r7, *r8, *r9, *r10, *r11, *r12, *r13}
 	rectangles := []DoublePointRectangle{*r12, *r13, *r11, *r10, *r9, *r8, *r7, *r6, *r5, *r4, *r3, *r2, *r1}
+	return rectangles, expectedRectangles
+}
+
+func TestComputeUniverse(t *testing.T) {
+	rectangles, expectedRectangles := getTestPeanoOrderRectangles()
+	u1 := ComputeUniverse(slices.Values(rectangles))
+	u2 := ComputeUniverse(slices.Values(expectedRectangles))
+	if !u1.Equals(u2) {
+		t.Fatal("same sets should have the same universe ")
+	}
+	t.Log("U1", u1, "U2", u2)
+	expectedUniverse := DoublePointRectangle{
+		LowLeft: []float64{0, 0},
+		UpRight: []float64{7, 7},
+	}
+	if !u1.Equals(expectedUniverse) {
+		t.Fatalf(" Expected %s got %s ", &u1, &expectedUniverse)
+	}
+}
+
+func TestPaintRectangles(t *testing.T) {
+	_, expectedRectangles := getTestPeanoOrderRectangles()
+	uni := ComputeUniverse(slices.Values(expectedRectangles))
+	painter := NewSVGPainter(500, 500, uni)
+	for rec := range slices.Values(expectedRectangles) {
+		painter.AddRectangle(rec, "blue", "2")
+	}
+	file := "./rectangles.svg"
+	painter.SaveToFile(file)
+	data, err := os.ReadFile(file)
+	if err != nil {
+		t.Fatalf("error reading SVG file: %v", err)
+	}
+	var svgData Svg
+	err = xml.Unmarshal(data, &svgData)
+	if err != nil {
+		t.Fatalf("error unmarshalling SVG data: %v", err)
+	}
+	if len(svgData.Rects) != len(expectedRectangles) {
+		t.Fatalf("expected %d rectangles, but got %d", len(expectedRectangles), len(svgData.Rects))
+	}
+
+}
+
+func TestGOPTPartitioning(t *testing.T) {
+	rectangles, expectedRectangles := getTestPeanoOrderRectangles()
 	globalRect, _ := NewDoublePointRectangle([]float64{0, 0}, []float64{1 << 32, 1 << 32})
 	for _, r := range rectangles {
 		center := r.Center()
@@ -110,7 +259,7 @@ func TestGOPTPartitioning(t *testing.T) {
 		return int(valueL) - int(valueR)
 	})
 	if !slices.EqualFunc(rectangles, expectedRectangles, func(l DoublePointRectangle, r DoublePointRectangle) bool {
-		return l.Equals(&r)
+		return l.Equals(r)
 	}) {
 		t.Errorf("Expected %v, but got %v", expectedRectangles, rectangles)
 	}
@@ -119,5 +268,17 @@ func TestGOPTPartitioning(t *testing.T) {
 	for idx, bucket := range costs {
 		t.Log("Bucket", bucket, idx)
 	}
-
+	partitions := DevisePartitioning(rectangles, costs, b)
+	t.Log(partitions)
+	// write svg
+	uni := ComputeUniverse(slices.Values(expectedRectangles))
+	painter := NewSVGPainter(500, 500, uni)
+	for rec := range slices.Values(expectedRectangles) {
+		painter.AddRectangle(rec, "blue", "2")
+	}
+	for _, p := range partitions {
+		painter.AddRectangle(p.Mbr, "red", "1")
+	}
+	file := "./rectangles.svg"
+	painter.SaveToFile(file)
 }
