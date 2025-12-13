@@ -26,8 +26,8 @@ func (d DoublePoint) Dimension() int {
 
 // DoublePointRectangle represents a rectangle in N-dimensional space using double-precision floating-point numbers.
 type DoublePointRectangle struct {
-	LowLeft DoublePoint // non private to allow direct access
-	UpRight DoublePoint // non private to allow direct access
+	LowLeft DoublePoint
+	UpRight DoublePoint
 }
 
 // returns  a pointer to a new DoublePointRectangle
@@ -205,7 +205,7 @@ func (p MbrPartition) String() string {
 	return fmt.Sprintf("MBR %s partition %v ", &p.Mbr, p.Partition)
 }
 
-// GoptHyperVolume computes an gopt() function on a set of rectangles
+// GOPTPartitions computes an gopt() function on a set of rectangles
 // using dynamic programming see Achakeev, Seeger, Widmayer et. Al.
 // "Sort-based query-adaptive loading of R-trees" CIKM 2012
 // we minimize sum of hypervolumes
@@ -223,7 +223,6 @@ func GOPTPartitions(rectangles []DoublePointRectangle, b int, B int) []Bucket {
 		precomputeRectangles(rectangles, buffer, i, b, B)
 		// now go back to find the arg min
 		costs[i].COpt = math.MaxFloat64
-		// old style looping
 		for j := 0; j < bufLen; j++ {
 			// now pos 0 is equal to i - B+ 1 there is the rectangle of size B and its area
 			prevIdx := i - B + j
@@ -252,11 +251,9 @@ func GOPTPartitions(rectangles []DoublePointRectangle, b int, B int) []Bucket {
 	return costs
 }
 
-// precomputeVolumes function runs from position t to t-B to compute b till B sized volumes
+// precomputeRectangles  function runs from position t to t-B to compute b till B sized volumes
 // subfunction mutates the [B-b+1] length
 func precomputeRectangles(sourceSlice []DoublePointRectangle, buffeSlice []DoublePointRectangle, startIndex int, b int, B int) {
-	// take rectangle on the current position
-	// assertion .(T)
 	var universe DoublePointRectangle
 	sj := len(buffeSlice) - 1
 	// so now we go backwards and call union
@@ -277,8 +274,8 @@ func precomputeRectangles(sourceSlice []DoublePointRectangle, buffeSlice []Doubl
 	}
 }
 
-// DevisePartitioning from cost array and source partitioning
-func DevisePartitioning(rectangles []DoublePointRectangle, buckets []Bucket, b int) []MbrPartition {
+// BackTraceGopt from cost array and source partitioning
+func BackTraceGopt(rectangles []DoublePointRectangle, buckets []Bucket, b int) []MbrPartition {
 	idx := len(buckets) - 1
 	partitions := make([]MbrPartition, 0, (idx+1)/b) // prealloacate with max cap
 	for {
@@ -295,7 +292,6 @@ func DevisePartitioning(rectangles []DoublePointRectangle, buckets []Bucket, b i
 		}
 	}
 	return partitions
-
 }
 
 // ComputeUniverse returns MBR of the iterator
