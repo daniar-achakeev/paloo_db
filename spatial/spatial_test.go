@@ -182,21 +182,22 @@ func TestGetPeanoCurveValue2D32(t *testing.T) {
 // reuturns rectangles and expected z-order
 func getTestPeanoOrderRectangles() ([]DoublePointRectangle, []DoublePointRectangle) {
 	r1, _ := NewDoublePointRectangle([]float64{0, 0}, []float64{0, 0})
-	r2, _ := NewDoublePointRectangle([]float64{3, 0}, []float64{3, 0})
-	r3, _ := NewDoublePointRectangle([]float64{2, 1}, []float64{2, 1})
-	r4, _ := NewDoublePointRectangle([]float64{0, 2}, []float64{0, 2})
+	r2, _ := NewDoublePointRectangle([]float64{3, 1}, []float64{3, 1})
+	r3, _ := NewDoublePointRectangle([]float64{0, 2}, []float64{0, 2})
+	r4, _ := NewDoublePointRectangle([]float64{0, 3}, []float64{0, 3})
 	r5, _ := NewDoublePointRectangle([]float64{2, 3}, []float64{2, 3})
-	r6, _ := NewDoublePointRectangle([]float64{5, 0}, []float64{5, 0})
+	r6, _ := NewDoublePointRectangle([]float64{6, 0}, []float64{6, 0})
 	r7, _ := NewDoublePointRectangle([]float64{7, 2}, []float64{7, 2})
 	r8, _ := NewDoublePointRectangle([]float64{0, 5}, []float64{0, 5})
-	r9, _ := NewDoublePointRectangle([]float64{0, 7}, []float64{0, 7})
-	r10, _ := NewDoublePointRectangle([]float64{7, 4}, []float64{7, 4})
-	r11, _ := NewDoublePointRectangle([]float64{7, 5}, []float64{7, 5})
-	r12, _ := NewDoublePointRectangle([]float64{4, 6}, []float64{4, 6})
-	r13, _ := NewDoublePointRectangle([]float64{7, 7}, []float64{7, 7})
+	r9, _ := NewDoublePointRectangle([]float64{2, 5}, []float64{2, 5})
+	r10, _ := NewDoublePointRectangle([]float64{0, 7}, []float64{0, 7})
+	r11, _ := NewDoublePointRectangle([]float64{7, 4}, []float64{7, 4})
+	r12, _ := NewDoublePointRectangle([]float64{7, 5}, []float64{7, 5})
+	r13, _ := NewDoublePointRectangle([]float64{4, 6}, []float64{4, 6})
+	r14, _ := NewDoublePointRectangle([]float64{7, 7}, []float64{7, 7})
 	// expected
-	expectedRectangles := []DoublePointRectangle{*r1, *r2, *r3, *r4, *r5, *r6, *r7, *r8, *r9, *r10, *r11, *r12, *r13}
-	rectangles := []DoublePointRectangle{*r12, *r13, *r11, *r10, *r9, *r8, *r7, *r6, *r5, *r4, *r3, *r2, *r1}
+	expectedRectangles := []DoublePointRectangle{*r1, *r2, *r3, *r4, *r5, *r6, *r7, *r8, *r9, *r10, *r11, *r12, *r13, *r14}
+	rectangles := []DoublePointRectangle{*r14, *r12, *r13, *r11, *r10, *r9, *r8, *r7, *r6, *r5, *r4, *r3, *r2, *r1}
 	return rectangles, expectedRectangles
 }
 
@@ -268,7 +269,7 @@ func TestGOPTPartitioning(t *testing.T) {
 	for idx, bucket := range costs {
 		t.Log("Bucket", bucket, idx)
 	}
-	partitions := DevisePartitioning(rectangles, costs, b)
+	partitions := BackTraceGopt(rectangles, costs, b)
 	t.Log(partitions)
 	// write svg
 	uni := ComputeUniverse(slices.Values(expectedRectangles))
