@@ -3,6 +3,7 @@
 package operators
 
 import (
+	"container/heap"
 	"encoding/binary"
 	"fmt"
 	"iter"
@@ -190,6 +191,114 @@ func NewGoSortRunGeneratorParallel[T any, C utils.Comparator[T]](
 		return nil
 	}
 */
+
+/* Heap merge implementation for testing purposes.
+* This implementation uses a min-heap to merge multiple sorted sequences.
+* It is not optimized for production use and is intended for testing and comparison purposes only.
+ */
+
+// PullIterRecordPair is a helper struct to hold the current record and the next function of an iterator
+type PullIterRecordPair[T any] struct {
+	record T
+	next   func() (T, error, bool)
+	stop   func()
+}
+
+// internal comparator for PullIterRecordPair
+type PullIterRecordPairComparator[T any, C utils.Comparator[T]] struct {
+	c C
+}
+
+func NewPullIterRecordPairComparator[T any, C utils.Comparator[T]](c C) PullIterRecordPairComparator[T, C] {
+	return PullIterRecordPairComparator[T, C]{c: c}
+}
+
+func (c PullIterRecordPairComparator[T, C]) Compare(a, b PullIterRecordPair[T]) int {
+	return c.c.Compare(a.record, b.record)
+}
+
+// MergeHeapFunc has the type of MergeFunc that uses a min-heap to merge sorted sequences.
+// It takes a slice of sorted sequences and a comparator function, and returns a single merged sequence.
+// It returns an error if any of the input sequences yield an error.
+func MergeHeapFunc[T any, C utils.Comparator[T]](sequences []iter.Seq2[T, error], comparatorFunc C) (iter.Seq2[T, error], error) {
+	// create heap
+	heapCompare := NewPullIterRecordPairComparator(comparatorFunc)
+	mergeHeap := &MergeHeap[PullIterRecordPair[T], PullIterRecordPairComparator[T, C]]{
+		items:   []PullIterRecordPair[T]{},
+		compare: heapCompare,
+	}
+	heap.Init(mergeHeap)
+	// Implement merging logic here
+	for _, s := range sequences {
+		// pull the first item from each sequence
+		next, stop := iter.Pull2(s)
+		r, err, ok := next()
+		if !ok {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		pair := PullIterRecordPair[T]{record: r, next: next, stop: stop}
+		heap.Push(mergeHeap, pair)
+	}
+	return func(yield func(T, error) bool) {
+		for mergeHeap.Len() > 0 {
+			// pull the smallest item from the heap
+			item := heap.Pop(mergeHeap).(PullIterRecordPair[T])
+			// yield the item
+			if !yield(item.record, nil) {
+				return
+			}
+			// push the next item from the same sequence
+			next, stop := item.next, item.stop
+			if r, err, ok := next(); ok {
+				if err != nil {
+					// stop the iteration on error
+					// TODO: should I push error and Zero?
+					stop()
+					return
+				}
+				pair := PullIterRecordPair[T]{record: r, next: next, stop: stop}
+				heap.Push(mergeHeap, pair)
+			} else {
+				stop()
+			}
+		}
+	}, nil
+}
+
+// MergeHeap is a min-heap used for merging sorted sequences.
+// uses standard library container/heap interface
+type MergeHeap[T any, C utils.Comparator[T]] struct {
+	items   []T
+	compare C
+}
+
+func (h *MergeHeap[T, C]) Len() int {
+	return len(h.items)
+}
+
+func (h *MergeHeap[T, C]) Less(i, j int) bool {
+	return h.compare.Compare(h.items[i], h.items[j]) < 0
+}
+
+func (h *MergeHeap[T, C]) Swap(i, j int) {
+	h.items[i], h.items[j] = h.items[j], h.items[i]
+}
+
+func (h *MergeHeap[T, C]) Push(x any) {
+	h.items = append(h.items, x.(T))
+}
+
+func (h *MergeHeap[T, C]) Pop() any {
+	old := h.items
+	n := len(old)
+	x := old[n-1]
+	h.items = old[0 : n-1]
+	return x
+}
+
 func permutate[T any](slice []T) []T {
 	n := len(slice)
 	r := rand.New(rand.NewSource(42))
@@ -204,6 +313,12 @@ func permutate[T any](slice []T) []T {
 	return slice
 }
 
+/* END Heap merge implementation for testing purposes.
+* This implementation uses a min-heap to merge multiple sorted sequences.
+* It is not optimized for production use and is intended for testing and comparison purposes only.
+ */
+
+// Int32DSCmp is a deserializer, serializer and comparator for int32 type
 type Int32DSCmp struct{}
 
 func (d Int32DSCmp) Deserialize(data []byte) (int32, error) {
