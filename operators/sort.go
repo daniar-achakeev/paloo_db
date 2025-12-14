@@ -9,7 +9,6 @@ package operators
 // e.g. multi-threaded, single-threaded, replacement-selection, radix,... etc.
 // We are still using standard range iterators mostly iter.Seq and iter.Seq2 with error handling
 import (
-	"container/heap"
 	"fmt"
 	"iter"
 	"os"
@@ -298,12 +297,9 @@ func (g *GoStandarSortRunGenerator[T, C]) GenerateRuns(input iter.Seq[T], create
 // sortAndFlush sorts the current sliceBuffer and writes to temp file
 func (g *GoStandarSortRunGenerator[T, C]) sortAndFlush(currentRunIndex int, createTmpFile func(currentRunIndex int, index int) (*os.File, error)) error {
 	var err error
-	// NOTE: FIXME currently we use a wrapper around the comparator function
-	cmpFunc := func(a, b T) int {
-		return g.comparatorFunc.Compare(a, b)
-	}
 	// Sort the entire sliceBuffer
-	slices.SortFunc(g.sliceBuffer, cmpFunc)
+	// NOTE: FIXME currently we use a wrapper around the comparator function
+	slices.SortFunc(g.sliceBuffer, g.comparatorFunc.Compare)
 	tmpFile, err := createTmpFile(currentRunIndex, 0)
 	if err != nil {
 		return fmt.Errorf("failed to create temporary file: %v", err)
@@ -314,108 +310,6 @@ func (g *GoStandarSortRunGenerator[T, C]) sortAndFlush(currentRunIndex int, crea
 		return fmt.Errorf("failed to write merged sequence to temporary file: %v", err)
 	}
 	return nil
-}
-
-// PullIterRecordPair is a helper struct to hold the current record and the next function of an iterator
-type PullIterRecordPair[T any] struct {
-	record T
-	next   func() (T, error, bool)
-	stop   func()
-}
-
-// internal comparator for PullIterRecordPair
-type PullIterRecordPairComparator[T any, C utils.Comparator[T]] struct {
-	c C
-}
-
-func NewPullIterRecordPairComparator[T any, C utils.Comparator[T]](c C) PullIterRecordPairComparator[T, C] {
-	return PullIterRecordPairComparator[T, C]{c: c}
-}
-
-func (c PullIterRecordPairComparator[T, C]) Compare(a, b PullIterRecordPair[T]) int {
-	return c.c.Compare(a.record, b.record)
-}
-
-// MergeHeapFunc has the type of MergeFunc that uses a min-heap to merge sorted sequences.
-// It takes a slice of sorted sequences and a comparator function, and returns a single merged sequence.
-// It returns an error if any of the input sequences yield an error.
-func MergeHeapFunc[T any, C utils.Comparator[T]](sequences []iter.Seq2[T, error], comparatorFunc C) (iter.Seq2[T, error], error) {
-	// create heap
-	heapCompare := NewPullIterRecordPairComparator(comparatorFunc)
-	mergeHeap := &MergeHeap[PullIterRecordPair[T], PullIterRecordPairComparator[T, C]]{
-		items:   []PullIterRecordPair[T]{},
-		compare: heapCompare,
-	}
-	heap.Init(mergeHeap)
-	// Implement merging logic here
-	for _, s := range sequences {
-		// pull the first item from each sequence
-		next, stop := iter.Pull2(s)
-		r, err, ok := next()
-		if !ok {
-			continue
-		}
-		if err != nil {
-			return nil, err
-		}
-		pair := PullIterRecordPair[T]{record: r, next: next, stop: stop}
-		heap.Push(mergeHeap, pair)
-	}
-	return func(yield func(T, error) bool) {
-		for mergeHeap.Len() > 0 {
-			// pull the smallest item from the heap
-			item := heap.Pop(mergeHeap).(PullIterRecordPair[T])
-			// yield the item
-			if !yield(item.record, nil) {
-				return
-			}
-			// push the next item from the same sequence
-			next, stop := item.next, item.stop
-			if r, err, ok := next(); ok {
-				if err != nil {
-					// stop the iteration on error
-					// TODO: should I push error and Zero?
-					stop()
-					return
-				}
-				pair := PullIterRecordPair[T]{record: r, next: next, stop: stop}
-				heap.Push(mergeHeap, pair)
-			} else {
-				stop()
-			}
-		}
-	}, nil
-}
-
-// MergeHeap is a min-heap used for merging sorted sequences.
-// uses standard library container/heap interface
-type MergeHeap[T any, C utils.Comparator[T]] struct {
-	items   []T
-	compare C
-}
-
-func (h *MergeHeap[T, C]) Len() int {
-	return len(h.items)
-}
-
-func (h *MergeHeap[T, C]) Less(i, j int) bool {
-	return h.compare.Compare(h.items[i], h.items[j]) < 0
-}
-
-func (h *MergeHeap[T, C]) Swap(i, j int) {
-	h.items[i], h.items[j] = h.items[j], h.items[i]
-}
-
-func (h *MergeHeap[T, C]) Push(x any) {
-	h.items = append(h.items, x.(T))
-}
-
-func (h *MergeHeap[T, C]) Pop() any {
-	old := h.items
-	n := len(old)
-	x := old[n-1]
-	h.items = old[0 : n-1]
-	return x
 }
 
 // MergeTournamentFunc
