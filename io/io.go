@@ -33,6 +33,7 @@ type Storage[I comparable, O any] interface {
 
 // Block interface for block oriented storage
 type TmpBlock interface {
+	utils.Iterator[[]byte]
 	Append(data []byte) bool // appends data to the block, returns false if not enough space
 	ToByteArray() []byte     // returns the block as byte array
 	All() iter.Seq[[]byte]   // returns a function that yields all records in the block
@@ -242,6 +243,7 @@ func (s *SequenceBlockSingleFileStorage) Close() error {
 
 // TempFileWriter interface for writing temporary files
 type TempFileWriter[T any] interface {
+	Write(it utils.Iterator[T]) error
 	WriteSeq(recordSeq iter.Seq[T]) error
 	Flush() error
 	Close() error
@@ -300,6 +302,39 @@ func (w *BlockTempFileWriter[T, B, S]) WriteSeq(recordSeq iter.Seq[T]) error {
 	return nil
 }
 
+func (w *BlockTempFileWriter[T, B, S]) Write(it utils.Iterator[T]) error {
+	buf := make([]byte, w.recordSize) // allocate buffer
+	for {
+		record, ok, err := it.Next()
+		if !ok {
+			break
+		}
+		if err != nil {
+			return err
+		}
+		err = w.serialize.Serialize(record, buf)
+		if err != nil {
+			return err
+		}
+		ok = w.bufferBlock.Append(buf)
+		if !ok {
+			if err := w.Flush(); err != nil {
+				return err
+			}
+			w.bufferBlock.Reset()
+			w.bufferBlock.Append(buf)
+		}
+	}
+	// flush remaining data
+	if w.bufferBlock.Size() > 0 {
+		if err := w.Flush(); err != nil {
+			return err
+		}
+		w.bufferBlock.Reset()
+	}
+	return nil
+}
+
 func (w *BlockTempFileWriter[T, B, S]) Flush() error {
 	// currently don´t use fsync
 	// FIXME for WAL writer
@@ -321,6 +356,21 @@ type BlockTempFileReader[T any, B TmpBlock, D utils.Deserializer[T]] struct {
 	deserialize D
 	bufferSize  int
 	bufferBlock B
+}
+
+func NewTempFileIterator[T any](file *os.File, bufferSize int, recordSize int, deserialize utils.Deserializer[T]) (*BlockTempFileReader[T, *FixedSizeRecordBlock, utils.Deserializer[T]], error) {
+	block := NewFixedSizeRecordBlock(bufferSize, recordSize)
+	it := &BlockTempFileReader[T, *FixedSizeRecordBlock, utils.Deserializer[T]]{
+		file:        file,
+		bufferSize:  bufferSize,
+		bufferBlock: &block,
+		deserialize: deserialize,
+	}
+	_, err := it.readNextBlock()
+	if err != nil {
+		return nil, err
+	}
+	return it, nil
 }
 
 func NewFixedLenTempFileReader[T any](file *os.File, bufferSize int, recordSize int, deserialize utils.Deserializer[T]) *BlockTempFileReader[T, *FixedSizeRecordBlock, utils.Deserializer[T]] {
@@ -371,6 +421,42 @@ func (r *BlockTempFileReader[T, B, D]) All() iter.Seq2[T, error] {
 		}
 	}
 	return f
+}
+
+func (r *BlockTempFileReader[T, B, D]) Next() (T, bool, error) {
+	b, ok, err := r.bufferBlock.Next()
+	if !ok { // read next block
+		ok, err := r.readNextBlock()
+		if !ok || err != nil {
+			return utils.Zero[T](), false, err
+		}
+		b, ok, err = r.bufferBlock.Next()
+		if !ok || err != nil {
+			return utils.Zero[T](), false, err
+		}
+	}
+	if err != nil {
+		return utils.Zero[T](), false, err
+	}
+	t, err := r.deserialize.Deserialize(b)
+	if err != nil {
+		return utils.Zero[T](), false, err
+	}
+	return t, true, nil
+}
+
+func (r *BlockTempFileReader[T, B, D]) readNextBlock() (bool, error) {
+	// initial read
+	_, err := r.file.Read(r.bufferBlock.GetBytes())
+	if errors.Is(err, io.EOF) {
+		// use close to close the file
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	r.bufferBlock.Bootstrap()
+	return true, nil
 }
 
 func (r *BlockTempFileReader[T, B, D]) Close() error {
@@ -440,6 +526,7 @@ func (rb *FixedSizeRecordBlock) Bootstrap() {
 	rb.numRecords = binary.BigEndian.Uint32(rb.data[0:4])
 	rb.currentOffset = binary.BigEndian.Uint32(rb.data[4:8])
 	rb.recordByteSize = binary.BigEndian.Uint32(rb.data[8:12])
+	rb.currentIndex = 0
 }
 
 func (rb *FixedSizeRecordBlock) All() iter.Seq[[]byte] {
@@ -466,6 +553,7 @@ func (rb *FixedSizeRecordBlock) Next() ([]byte, bool, error) {
 func (rb *FixedSizeRecordBlock) Reset() error {
 	rb.numRecords = 0
 	rb.currentOffset = 12
+	rb.currentIndex = 0
 	return nil
 }
 
@@ -558,4 +646,9 @@ func (rb *VarLenRecordBlock) All() iter.Seq[[]byte] {
 			offset += lengthInt
 		}
 	}
+}
+
+func (rb *VarLenRecordBlock) Next() ([]byte, bool, error) {
+	// TODO
+	return nil, false, nil
 }

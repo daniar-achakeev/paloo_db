@@ -9,6 +9,7 @@ package operators
 // e.g. multi-threaded, single-threaded, replacement-selection, radix,... etc.
 // We are still using standard range iterators mostly iter.Seq and iter.Seq2 with error handling
 import (
+	"errors"
 	"fmt"
 	"iter"
 	"os"
@@ -20,8 +21,8 @@ import (
 	"github.com/daniar-achakeev/paloo_db/utils"
 )
 
-// Redefine back as function alias
-type MergeFunc[T any, C utils.Comparator[T]] func(sequences []iter.Seq2[T, error], cmp C) (iter.Seq2[T, error], error)
+// MergeFuncIterator is iterator based factory function
+type MergeFunc[T any, C utils.Comparator[T]] func(iterators []utils.CloseableIterator[T], cmp C) (utils.CloseableIterator[T], error)
 
 // RunGenerator is an interface for generating sorted runs from an input sequence.
 type RunGenerator[T any, C utils.Comparator[T]] interface {
@@ -42,7 +43,7 @@ type Sorter[T any, C utils.Comparator[T]] struct {
 	deserialize           utils.Deserializer[T]
 	mergeFunc             MergeFunc[T, C]
 	runGenerator          RunGenerator[T, C]
-	tempFileReaderFactory func(file *os.File, deserialize utils.Deserializer[T]) io.TempFileReader[T]
+	tempFileReaderFactory func(file *os.File, deserialize utils.Deserializer[T]) (utils.CloseableIterator[T], error)
 	tempFileWriterFactory func(file *os.File, serialize utils.Serializer[T]) io.TempFileWriter[T]
 	kWayMergeSize         int // max number of files that would be merged in each round
 	directoryPath         string
@@ -59,7 +60,7 @@ func NewSorter[T any, C utils.Comparator[T]](
 	deserialize utils.Deserializer[T],
 	mergeFunc MergeFunc[T, C],
 	runGenerator RunGenerator[T, C],
-	tempFileReaderFactory func(file *os.File, deserialize utils.Deserializer[T]) io.TempFileReader[T],
+	tempFileReaderFactory func(file *os.File, deserialize utils.Deserializer[T]) (utils.CloseableIterator[T], error),
 	tempFileWriterFactory func(file *os.File, serialize utils.Serializer[T]) io.TempFileWriter[T],
 	directoryPath string,
 	filePrefix string,
@@ -83,7 +84,7 @@ func NewSorter[T any, C utils.Comparator[T]](
 	}
 }
 
-func (s *Sorter[T, C]) Sort(input iter.Seq[T]) (iter.Seq2[T, error], error) {
+func (s *Sorter[T, C]) Sort(input iter.Seq[T]) (utils.CloseableIterator[T], error) {
 	if input == nil {
 		return nil, fmt.Errorf("input iterator is nil")
 	}
@@ -110,13 +111,17 @@ func (s *Sorter[T, C]) Sort(input iter.Seq[T]) (iter.Seq2[T, error], error) {
 		for i := 0; i < len(files); i += s.kWayMergeSize {
 			end := min(i+s.kWayMergeSize, len(files))
 			batch := files[i:end]
-			mergeSeq, err := s.mergeFiles(batch)
+			mergeIt, err := s.mergeFiles(batch)
 			if err != nil {
 				return nil, fmt.Errorf("failed to merge files: %v", err)
 			}
-			err = s.flushMergeSequence(mergeSeq, s.currentMergeRound, i)
+			err = s.flushMergeSequence(mergeIt, s.currentMergeRound, i)
 			if err != nil {
 				return nil, fmt.Errorf("failed to flush merge sequence: %v", err)
+			}
+			err = mergeIt.Close()
+			if err != nil {
+				return nil, fmt.Errorf("failed to close merged iterator: %v", err)
 			}
 		}
 		s.deleteFiles(files)
@@ -129,7 +134,7 @@ func (s *Sorter[T, C]) Sort(input iter.Seq[T]) (iter.Seq2[T, error], error) {
 	return s.mergeFiles(files)
 }
 
-func (s *Sorter[T, C]) mergeFiles(files []string) (iter.Seq2[T, error], error) {
+func (s *Sorter[T, C]) mergeFiles(files []string) (utils.CloseableIterator[T], error) {
 	if len(files) == 0 {
 		return nil, fmt.Errorf("no files to merge")
 	}
@@ -138,17 +143,19 @@ func (s *Sorter[T, C]) mergeFiles(files []string) (iter.Seq2[T, error], error) {
 		if err != nil {
 			return nil, fmt.Errorf("failed to open file %s: %v", files[0], err)
 		}
-		reader := s.tempFileReaderFactory(file, s.deserialize)
-		return reader.All(), nil
+		return s.tempFileReaderFactory(file, s.deserialize)
 	}
-	slicesOfSeq := make([]iter.Seq2[T, error], 0, len(files))
+	slicesOfSeq := make([]utils.CloseableIterator[T], 0, len(files))
 	for _, fileName := range files {
 		file, err := s.openFile(fileName)
 		if err != nil {
 			return nil, fmt.Errorf("failed to open file %s: %v", fileName, err)
 		}
-		reader := s.tempFileReaderFactory(file, s.deserialize)
-		slicesOfSeq = append(slicesOfSeq, reader.All())
+		it, err := s.tempFileReaderFactory(file, s.deserialize)
+		if err != nil {
+			return nil, err
+		}
+		slicesOfSeq = append(slicesOfSeq, it)
 	}
 	return s.mergeFunc(slicesOfSeq, s.comparatorFunc)
 }
@@ -171,7 +178,7 @@ func (s *Sorter[T, C]) getFilesToMerge(isRun bool, level int) ([]string, error) 
 	return files, nil
 }
 
-func (s *Sorter[T, C]) flushMergeSequence(mergeSeq iter.Seq2[T, error], currentMergeRound int, index int) error {
+func (s *Sorter[T, C]) flushMergeSequence(it utils.CloseableIterator[T], currentMergeRound int, index int) error {
 	// create a new temporary file for the merged output
 	// realistically index is 6 decimal digits
 	fileName := fmt.Sprintf("%s/%s_%s_%d_%06d.%s", s.directoryPath, s.filePrefix, s.mergeStr, currentMergeRound, index, s.fileExtension)
@@ -183,17 +190,7 @@ func (s *Sorter[T, C]) flushMergeSequence(mergeSeq iter.Seq2[T, error], currentM
 	// create a writer
 	writer := s.tempFileWriterFactory(file, s.serialize)
 	defer writer.Close()
-	err = writer.WriteSeq(func(yield func(T) bool) {
-		for r, err := range mergeSeq {
-			if err != nil {
-				// stop on error
-				return
-			}
-			if !yield(r) {
-				return
-			}
-		}
-	})
+	err = writer.Write(it)
 	if err != nil {
 		return fmt.Errorf("failed to write merged sequence to file %s: %v", fileName, err)
 	}
@@ -312,55 +309,6 @@ func (g *GoStandarSortRunGenerator[T, C]) sortAndFlush(currentRunIndex int, crea
 	return nil
 }
 
-// MergeTournamentFunc
-func MergeTournamentFunc[T any, C utils.Comparator[T]](sequences []iter.Seq2[T, error], cmp C) (iter.Seq2[T, error], error) {
-	// create tournament tree
-	iterators := make([]struct {
-		next func() (T, error, bool)
-		stop func()
-	}, len(sequences))
-	contestents := make([]TNode[T], len(sequences))
-	for i, s := range sequences {
-		next, stop := iter.Pull2(s)
-		iterators[i].next, iterators[i].stop = next, stop
-		r, err, ok := iterators[i].next()
-		if !ok {
-			contestents[i] = TNode[T]{idx: -1} // sentinel
-			stop()
-			continue
-		}
-		if err != nil {
-			return nil, err
-		}
-		contestents[i] = TNode[T]{value: r, idx: i}
-	}
-	tournament := NewTournamentTree(cmp, contestents)
-	return func(yield func(T, error) bool) {
-		for { // repeatedly pull the smallest item from the tournament tree
-			winner, ok := tournament.Winner()
-			if !ok { // all sources exhausted
-				return
-			}
-			winnerValue := winner.value
-			if !yield(winnerValue, nil) {
-				return
-			}
-			nextRecord, err, ok := iterators[winner.idx].next()
-			if err != nil {
-				yield(*new(T), err)
-				iterators[winner.idx].stop()
-				return
-			}
-			if !ok { // source exhausted
-				tournament.Challenge(TNode[T]{idx: -1}, winner.idx)
-				iterators[winner.idx].stop()
-				continue
-			}
-			tournament.Challenge(TNode[T]{value: nextRecord, idx: winner.idx}, winner.idx)
-		}
-	}, nil
-}
-
 // TNode: represents a node in the tournament tree used for k-way merging.
 type TNode[T any] struct {
 	value T   // value of the looser
@@ -449,4 +397,67 @@ func (t *TournamentTree[T, C]) Challenge(challenger TNode[T], index int) {
 		pIdx /= 2
 	}
 	t.tree[0] = w
+}
+
+type MergeTournamentIt[T any, C utils.Comparator[T]] struct {
+	tt        *TournamentTree[T, C]
+	iterators []utils.CloseableIterator[T]
+}
+
+func NewMergeTournamentIt[T any, C utils.Comparator[T]](iterators []utils.CloseableIterator[T], cmp C) (*MergeTournamentIt[T, C], error) {
+	contestents := make([]TNode[T], len(iterators))
+	for i, it := range iterators {
+		r, ok, err := it.Next()
+		if !ok {
+			contestents[i] = TNode[T]{idx: -1} // sentinel
+			it.Close()
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		contestents[i] = TNode[T]{value: r, idx: i}
+	}
+	tournament := NewTournamentTree(cmp, contestents)
+	return &MergeTournamentIt[T, C]{
+		tt:        tournament,
+		iterators: iterators,
+	}, nil
+}
+
+func (m *MergeTournamentIt[T, C]) Next() (T, bool, error) {
+	t, ok := m.tt.Winner()
+	if !ok { // stop sentinel winner
+		return t.value, ok, nil
+	}
+	nt, ok, err := m.iterators[t.idx].Next()
+	if err != nil {
+		return t.value, false, err
+	}
+	if !ok { // source exhausted
+		m.tt.Challenge(TNode[T]{idx: -1}, t.idx)
+	} else {
+		m.tt.Challenge(TNode[T]{value: nt, idx: t.idx}, t.idx)
+	}
+	return t.value, true, nil
+}
+
+func (m *MergeTournamentIt[T, C]) Close() error {
+	cErrs := make([]error, len(m.iterators))
+	hasErr := false
+	for i, it := range m.iterators {
+		if err := it.Close(); err != nil {
+			cErrs[i] = err
+			hasErr = true
+		}
+	}
+	if hasErr {
+		return fmt.Errorf("close errors %w", errors.Join(cErrs...))
+	}
+	return nil
+}
+
+func MergeTournamentIteratorFunc[T any, C utils.Comparator[T]](iterators []utils.CloseableIterator[T], cmp C) (utils.CloseableIterator[T], error) {
+	it, err := NewMergeTournamentIt(iterators, cmp)
+	return it, err
 }

@@ -6,11 +6,6 @@ import (
 	"sync"
 )
 
-// Iterator interface
-type Iterator[T any] interface {
-	Next() (T, bool, error) // returns (value, hasNext, error)
-}
-
 var ErrQueueFull = errors.New("queue is full")
 var ErrQueueEmpty = errors.New("queue is empty")
 
