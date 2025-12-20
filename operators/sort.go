@@ -22,7 +22,7 @@ import (
 )
 
 // MergeFuncIterator is iterator based factory function
-type MergeFunc[T any, C utils.Comparator[T]] func(iterators []utils.CloseableIterator[T], cmp C) (utils.CloseableIterator[T], error)
+type MergeIteratorFactoryFunc[T any, C utils.Comparator[T]] func(iterators []utils.CloseableIterator[T], cmp C) (utils.CloseableIterator[T], error)
 
 // RunGenerator is an interface for generating sorted runs from an input sequence.
 type RunGenerator[T any, C utils.Comparator[T]] interface {
@@ -41,7 +41,7 @@ type Sorter[T any, C utils.Comparator[T]] struct {
 	comparatorFunc        C
 	serialize             utils.Serializer[T]
 	deserialize           utils.Deserializer[T]
-	mergeFunc             MergeFunc[T, C]
+	mergeFunc             MergeIteratorFactoryFunc[T, C]
 	runGenerator          RunGenerator[T, C]
 	tempFileReaderFactory func(file *os.File, deserialize utils.Deserializer[T]) (utils.CloseableIterator[T], error)
 	tempFileWriterFactory func(file *os.File, serialize utils.Serializer[T]) io.TempFileWriter[T]
@@ -58,7 +58,7 @@ func NewSorter[T any, C utils.Comparator[T]](
 	comparatorFunc C,
 	serialize utils.Serializer[T],
 	deserialize utils.Deserializer[T],
-	mergeFunc MergeFunc[T, C],
+	mergeFunc MergeIteratorFactoryFunc[T, C],
 	runGenerator RunGenerator[T, C],
 	tempFileReaderFactory func(file *os.File, deserialize utils.Deserializer[T]) (utils.CloseableIterator[T], error),
 	tempFileWriterFactory func(file *os.File, serialize utils.Serializer[T]) io.TempFileWriter[T],
@@ -399,12 +399,12 @@ func (t *TournamentTree[T, C]) Challenge(challenger TNode[T], index int) {
 	t.tree[0] = w
 }
 
-type MergeTournamentIt[T any, C utils.Comparator[T]] struct {
+type TournamentIterator[T any, C utils.Comparator[T]] struct {
 	tt        *TournamentTree[T, C]
 	iterators []utils.CloseableIterator[T]
 }
 
-func NewMergeTournamentIt[T any, C utils.Comparator[T]](iterators []utils.CloseableIterator[T], cmp C) (*MergeTournamentIt[T, C], error) {
+func NewTournamentIt[T any, C utils.Comparator[T]](iterators []utils.CloseableIterator[T], cmp C) (*TournamentIterator[T, C], error) {
 	contestents := make([]TNode[T], len(iterators))
 	for i, it := range iterators {
 		r, ok, err := it.Next()
@@ -419,13 +419,13 @@ func NewMergeTournamentIt[T any, C utils.Comparator[T]](iterators []utils.Closea
 		contestents[i] = TNode[T]{value: r, idx: i}
 	}
 	tournament := NewTournamentTree(cmp, contestents)
-	return &MergeTournamentIt[T, C]{
+	return &TournamentIterator[T, C]{
 		tt:        tournament,
 		iterators: iterators,
 	}, nil
 }
 
-func (m *MergeTournamentIt[T, C]) Next() (T, bool, error) {
+func (m *TournamentIterator[T, C]) Next() (T, bool, error) {
 	t, ok := m.tt.Winner()
 	if !ok { // stop sentinel winner
 		return t.value, ok, nil
@@ -442,7 +442,7 @@ func (m *MergeTournamentIt[T, C]) Next() (T, bool, error) {
 	return t.value, true, nil
 }
 
-func (m *MergeTournamentIt[T, C]) Close() error {
+func (m *TournamentIterator[T, C]) Close() error {
 	cErrs := make([]error, len(m.iterators))
 	hasErr := false
 	for i, it := range m.iterators {
@@ -457,7 +457,7 @@ func (m *MergeTournamentIt[T, C]) Close() error {
 	return nil
 }
 
-func MergeTournamentIteratorFunc[T any, C utils.Comparator[T]](iterators []utils.CloseableIterator[T], cmp C) (utils.CloseableIterator[T], error) {
-	it, err := NewMergeTournamentIt(iterators, cmp)
+func TournamentIteratorFactory[T any, C utils.Comparator[T]](iterators []utils.CloseableIterator[T], cmp C) (utils.CloseableIterator[T], error) {
+	it, err := NewTournamentIt(iterators, cmp)
 	return it, err
 }
