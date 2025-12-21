@@ -5,6 +5,7 @@ package operators
 import (
 	"container/heap"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"iter"
 	"math/rand"
@@ -18,179 +19,54 @@ import (
 	"github.com/daniar-achakeev/paloo_db/utils"
 )
 
-/*
-// GoStandarSortRunGeneratorParallel test just uses divides into smaller chunks and then
-// applies sort in parallel
-
-	type GoSortRunGeneratorParallel[T any, C utils.Comparator[T]] struct {
-		runSize               int // maximum size of each run in bytes
-		initialRunSize        int // estimated initial size of each run
-		sliceBuffer           []T
-		parallelism           int
-		mergeFunc             MergeFunc[T, C]
-		comparatorFunc        C
-		getByteSize           utils.GetByteSize[T]
-		serialize             utils.Serializer[T]
-		tempFileWriterFactory func(file *os.File, serialize utils.Serializer[T]) io.TempFileWriter[T]
-	}
-
-func NewGoSortRunGeneratorParallel[T any, C utils.Comparator[T]](
-
-	tempFileWriterFactory func(file *os.File, serialize utils.Serializer[T]) io.TempFileWriter[T],
-	bufferSize int,
-	runSize int,
-	initialRunSize int,
-	parallelism int,
-
-	) *GoSortRunGeneratorParallel[T, C] {
-		runGen := &GoSortRunGeneratorParallel[T, C]{
-			tempFileWriterFactory: tempFileWriterFactory,
-			bufferSize:            bufferSize,
-			runSize:               runSize,
-			initialRunSize:        initialRunSize,
-			parallelism:           parallelism,
+// MergeTournamentFunc
+func MergeTournamentFunc[T any, C utils.Comparator[T]](sequences []iter.Seq2[T, error], cmp C) (iter.Seq2[T, error], error) {
+	// create tournament tree
+	iterators := make([]struct {
+		next func() (T, error, bool)
+		stop func()
+	}, len(sequences))
+	contestents := make([]TNode[T], len(sequences))
+	for i, s := range sequences {
+		next, stop := iter.Pull2(s)
+		iterators[i].next, iterators[i].stop = next, stop
+		r, err, ok := iterators[i].next()
+		if !ok {
+			contestents[i] = TNode[T]{idx: -1} // sentinel
+			stop()
+			continue
 		}
-		runGen.sliceBuffer = make([]T, 0, initialRunSize)
-		return runGen
-	}
-
-	func (g *GoSortRunGeneratorParallel[T, C]) GenerateRuns(input iter.Seq[T], createTmpFile func(currentRunIndex int, index int) (*os.File, error)) error {
-		if input == nil {
-			return fmt.Errorf("input iterator is nil")
-		}
-		currentSizeBytes := 0
-		currentRunIndex := 0
-		for t := range input {
-			byteSize := g.getByteSize.GetByteSize(t)
-			addedSize := currentSizeBytes + byteSize
-			if addedSize > g.runSize {
-				// sort and flush
-				if err := g.sortAndFlush(currentRunIndex, createTmpFile); err != nil {
-					return fmt.Errorf("failed to sort and flush: %v", err)
-				}
-				currentSizeBytes = 0
-				currentRunIndex++
-				// reset the slice buffer
-				g.sliceBuffer = nil
-			}
-			if g.sliceBuffer == nil {
-				g.sliceBuffer = make([]T, 0, g.initialRunSize)
-			}
-			g.sliceBuffer = append(g.sliceBuffer, t)
-			currentSizeBytes += byteSize
-		}
-		// flush the remaining items
-		if len(g.sliceBuffer) > 0 {
-			if err := g.sortAndFlush(currentRunIndex, createTmpFile); err != nil {
-				return fmt.Errorf("failed to sort and flush remaining items: %v", err)
-			}
-		}
-		return nil
-	}
-
-// sortAndFlush sorts the current sliceBuffer and flushes it to a temporary file using multiple goroutines.
-// It divides the sliceBuffer into chunks and sorts each chunk in parallel, writing each sorted chunk to a separate temporary file.
-// This approach allows for concurrent sorting and writing, improving performance on multi-core systems.
-
-	func (g *GoSortRunGeneratorParallel[T, C]) sortAndFlush(currentRunIndex int, createTmpFile func(currentRunIndex int, index int) (*os.File, error)) error {
-		// current plan not to use errgroup
-		// change in the future if needed
-		var sortedSeq iter.Seq2[T, error]
-		var err error
-		// currently we use a wrapper around the comparator function
-		cmpFunc := func(a, b T) int {
-			return g.comparatorFunc.Compare(a, b)
-		}
-		if g.parallelism > 1 {
-			var wg sync.WaitGroup
-			errorsChan := make(chan error, g.parallelism)
-			chunksChan := make(chan []T, g.parallelism)
-			defer close(errorsChan)
-			chunkSize := (len(g.sliceBuffer) + g.parallelism - 1) / g.parallelism
-			for i := 0; i < g.parallelism; i++ {
-				wg.Add(1)
-				go func(index int) {
-					defer wg.Done()
-					start := i * chunkSize
-					if start >= len(g.sliceBuffer) {
-						// no more data to process
-						return
-					}
-					end := min((i+1)*chunkSize, len(g.sliceBuffer))
-					part := g.sliceBuffer[start:end]
-					// Sort the chunk
-					slices.SortFunc(part, cmpFunc)
-					// Send the sorted chunk to the chunks channel
-					chunksChan <- part
-				}(i)
-			}
-			wg.Wait()
-			// Check for any errors
-			select {
-			case err := <-errorsChan:
-				return err
-			default:
-			}
-			// Close the chunks channel to signal that no more chunks will be sent
-			// This is safe to do here because all goroutines have completed
-			// and no more chunks will be sent
-			// get all chunks from the channel
-			chunks := make([]iter.Seq2[T, error], 0, g.parallelism)
-			mapToRecordWithError := func(seq iter.Seq[T]) iter.Seq2[T, error] {
-				return func(yield func(T, error) bool) {
-					for item := range seq {
-						if !yield(item, nil) {
-							break
-						}
-					}
-				}
-			}
-			for len(chunksChan) > 0 {
-				chunk := <-chunksChan
-				chunks = append(chunks, mapToRecordWithError(slices.Values(chunk)))
-			}
-			// Close the chunks channel
-			defer close(chunksChan)
-			// single threaded merge now to
-			// merge all chunks into a single sorted sequence
-			sortedSeq, err = g.mergeFunc(chunks, g.comparatorFunc)
-			if err != nil {
-				return fmt.Errorf("failed to merge sorted chunks: %v", err)
-			}
-		} else {
-			// Sort the entire sliceBuffer
-			slices.SortFunc(g.sliceBuffer, cmpFunc)
-			// Create a sequence from the sorted sliceBuffer
-			sortedSeq = func(yield func(T, error) bool) {
-				for _, item := range g.sliceBuffer {
-					if !yield(item, nil) {
-						break
-					}
-				}
-			}
-		}
-		tmpFile, err := createTmpFile(currentRunIndex, 0)
 		if err != nil {
-			return fmt.Errorf("failed to create temporary file: %v", err)
+			return nil, err
 		}
-		defer tmpFile.Close()
-		writer := g.tempFileWriterFactory(tmpFile, g.bufferSize, g.serialize)
-		if err := writer.WriteSeq(func(yield func(T) bool) {
-			for r, err := range sortedSeq {
-				if err != nil {
-					// stop on error
-					return
-				}
-				if !yield(r) {
-					break
-				}
-			}
-		}); err != nil {
-			return fmt.Errorf("failed to write merged sequence to temporary file: %v", err)
-		}
-		return nil
+		contestents[i] = TNode[T]{value: r, idx: i}
 	}
-*/
+	tournament := NewTournamentTree(cmp, contestents)
+	return func(yield func(T, error) bool) {
+		for { // repeatedly pull the smallest item from the tournament tree
+			winner, ok := tournament.Winner()
+			if !ok { // all sources exhausted
+				return
+			}
+			winnerValue := winner.value
+			if !yield(winnerValue, nil) {
+				return
+			}
+			nextRecord, err, ok := iterators[winner.idx].next()
+			if err != nil {
+				yield(*new(T), err)
+				iterators[winner.idx].stop()
+				return
+			}
+			if !ok { // source exhausted
+				tournament.Challenge(TNode[T]{idx: -1}, winner.idx)
+				iterators[winner.idx].stop()
+				continue
+			}
+			tournament.Challenge(TNode[T]{value: nextRecord, idx: winner.idx}, winner.idx)
+		}
+	}, nil
+}
 
 /* Heap merge implementation for testing purposes.
 * This implementation uses a min-heap to merge multiple sorted sequences.
@@ -299,6 +175,86 @@ func (h *MergeHeap[T, C]) Pop() any {
 	return x
 }
 
+type TNodeComparator[T any, C utils.Comparator[T]] struct {
+	cmp C
+}
+
+func (t TNodeComparator[T, C]) Compare(l TNode[T], r TNode[T]) int {
+	return t.cmp.Compare(l.value, r.value)
+}
+
+// HeapIterator is an iterator for testing purposes.
+type HeapIterator[T any, C utils.Comparator[T]] struct {
+	h         *MergeHeap[TNode[T], TNodeComparator[T, C]]
+	iterators []utils.CloseableIterator[T]
+}
+
+func NewHeapIterator[T any, C utils.Comparator[T]](iterators []utils.CloseableIterator[T], cmp C) (*HeapIterator[T, C], error) {
+	cmpT := TNodeComparator[T, C]{cmp: cmp}
+	mergeHeap := &MergeHeap[TNode[T], TNodeComparator[T, C]]{
+		items:   []TNode[T]{},
+		compare: cmpT,
+	}
+	heap.Init(mergeHeap)
+	// load heads
+	for i, it := range iterators {
+		r, ok, err := it.Next()
+		if !ok {
+			it.Close()
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		heap.Push(mergeHeap, TNode[T]{value: r, idx: i})
+	}
+	return &HeapIterator[T, C]{
+		h:         mergeHeap,
+		iterators: iterators,
+	}, nil
+}
+
+func (h *HeapIterator[T, C]) Next() (T, bool, error) {
+	if h.h.Len() > 0 {
+		tn := heap.Pop(h.h).(TNode[T])
+		next, ok, err := h.iterators[tn.idx].Next()
+		if err != nil {
+			return utils.Zero[T](), false, err
+		}
+		if ok {
+			heap.Push(h.h, TNode[T]{value: next, idx: tn.idx})
+		} // if exausted do nothing
+		return tn.value, true, nil
+	}
+	return utils.Zero[T](), false, nil
+}
+
+func (h *HeapIterator[T, C]) Close() error {
+	cErrs := make([]error, len(h.iterators))
+	hasErr := false
+	for i, it := range h.iterators {
+		if err := it.Close(); err != nil {
+			cErrs[i] = err
+			hasErr = true
+		}
+	}
+	if hasErr {
+		return fmt.Errorf("close errors %w", errors.Join(cErrs...))
+	}
+	return nil
+}
+
+// Factory
+func HeapIteratorFactory[T any, C utils.Comparator[T]](iterators []utils.CloseableIterator[T], cmp C) (utils.CloseableIterator[T], error) {
+	it, err := NewHeapIterator(iterators, cmp)
+	return it, err
+}
+
+/* END Heap merge implementation for testing purposes.
+* This implementation uses a min-heap to merge multiple sorted sequences.
+* It is not optimized for production use and is intended for testing and comparison purposes only.
+ */
+
 func permutate[T any](slice []T) []T {
 	n := len(slice)
 	r := rand.New(rand.NewSource(42))
@@ -312,11 +268,6 @@ func permutate[T any](slice []T) []T {
 	}
 	return slice
 }
-
-/* END Heap merge implementation for testing purposes.
-* This implementation uses a min-heap to merge multiple sorted sequences.
-* It is not optimized for production use and is intended for testing and comparison purposes only.
- */
 
 // Int32DSCmp is a deserializer, serializer and comparator for int32 type
 type Int32DSCmp struct{}
@@ -633,6 +584,73 @@ func (g Int64DSCmp) GetByteSize(item int64) int {
 	return 8
 }
 
+func TestSimpleInt64SortHeap(t *testing.T) {
+	elementsCount := 15
+	int64Slice := make([]int64, 0, elementsCount)
+	for i := range elementsCount {
+		int64Slice = append(int64Slice, int64(i))
+	}
+	int64Slice = permutate(int64Slice)
+	tmpDirectory := t.TempDir()
+	prefix := "int64sort"
+	suffix := "tmp"
+	kWay := 5
+	readBufferSize, writeBufferSize := 1024, 1024 //
+	runSize := 64                                 // 512 /8 = 64 int64 per run
+	writeFactory := func(file *os.File, serialize utils.Serializer[int64]) io.TempFileWriter[int64] {
+		return io.NewFixedSizeTempFileWriter(file, writeBufferSize, 8, serialize)
+	}
+	readFactory := func(file *os.File, deserialize utils.Deserializer[int64]) (utils.CloseableIterator[int64], error) {
+		return io.NewTempFileIterator(file, readBufferSize, 8, deserialize)
+	}
+	cmpDeSer := Int64DSCmp{}
+	runGenerator := NewGoStandarSortRunGenerator(
+		runSize,
+		512/8, // initial run size
+		cmpDeSer,
+		cmpDeSer,
+		cmpDeSer,
+		writeFactory,
+	)
+	sorter := NewSorter(
+		cmpDeSer,
+		cmpDeSer,
+		cmpDeSer,
+		HeapIteratorFactory[int64, Int64DSCmp],
+		runGenerator,
+		readFactory,
+		writeFactory,
+		tmpDirectory,
+		prefix,
+		suffix,
+		kWay,
+	)
+	sortedSeq, err := sorter.Sort(slices.Values(int64Slice))
+	if err != nil {
+		t.Fatalf("failed to sort: %v", err)
+	}
+	previous := int64(-1)
+	count := 0
+	for {
+		r, ok, err := sortedSeq.Next()
+		if !ok {
+			break
+		}
+		if err != nil {
+			t.Errorf("read failed: %v", err)
+		}
+		if r < previous {
+			t.Errorf("expected %d, but got %d", previous, r)
+		}
+		previous = r
+		count++
+	}
+	sortedSeq.Close()
+	if count != elementsCount {
+		t.Errorf("expected to read %d records, but got %d", elementsCount, count)
+	}
+}
+
 func TestSimpleInt64Sort(t *testing.T) {
 	elementsCount := 1000
 	int64Slice := make([]int64, 0, elementsCount)
@@ -649,8 +667,8 @@ func TestSimpleInt64Sort(t *testing.T) {
 	writeFactory := func(file *os.File, serialize utils.Serializer[int64]) io.TempFileWriter[int64] {
 		return io.NewFixedSizeTempFileWriter(file, writeBufferSize, 8, serialize)
 	}
-	readFactory := func(file *os.File, deserialize utils.Deserializer[int64]) io.TempFileReader[int64] {
-		return io.NewFixedLenTempFileReader(file, readBufferSize, 8, deserialize)
+	readFactory := func(file *os.File, deserialize utils.Deserializer[int64]) (utils.CloseableIterator[int64], error) {
+		return io.NewTempFileIterator(file, readBufferSize, 8, deserialize)
 	}
 	cmpDeSer := Int64DSCmp{}
 	runGenerator := NewGoStandarSortRunGenerator(
@@ -665,7 +683,7 @@ func TestSimpleInt64Sort(t *testing.T) {
 		cmpDeSer,
 		cmpDeSer,
 		cmpDeSer,
-		MergeTournamentFunc[int64, Int64DSCmp],
+		TournamentIteratorFactory[int64, Int64DSCmp],
 		runGenerator,
 		readFactory,
 		writeFactory,
@@ -680,7 +698,11 @@ func TestSimpleInt64Sort(t *testing.T) {
 	}
 	previous := int64(-1)
 	count := 0
-	for r, err := range sortedSeq {
+	for {
+		r, ok, err := sortedSeq.Next()
+		if !ok {
+			break
+		}
 		if err != nil {
 			t.Errorf("read failed: %v", err)
 		}
@@ -690,6 +712,7 @@ func TestSimpleInt64Sort(t *testing.T) {
 		previous = r
 		count++
 	}
+	sortedSeq.Close()
 	if count != elementsCount {
 		t.Errorf("expected to read %d records, but got %d", elementsCount, count)
 	}
@@ -722,8 +745,8 @@ func TestSimpleInt64SortLarge(t *testing.T) {
 	writeFactory := func(file *os.File, serialize utils.Serializer[int64]) io.TempFileWriter[int64] {
 		return io.NewFixedSizeTempFileWriter(file, writeBufferSize, 8, serialize)
 	}
-	readFactory := func(file *os.File, deserialize utils.Deserializer[int64]) io.TempFileReader[int64] {
-		return io.NewFixedLenTempFileReader(file, readBufferSize, 8, deserialize)
+	readFactory := func(file *os.File, deserialize utils.Deserializer[int64]) (utils.CloseableIterator[int64], error) {
+		return io.NewTempFileIterator(file, readBufferSize, 8, deserialize)
 	}
 	cmpDeSer := Int64DSCmp{}
 	// start tests
@@ -732,7 +755,7 @@ func TestSimpleInt64SortLarge(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			tmpDirectory := t.TempDir()
 			t.Logf("Using temp directory: %s", tmpDirectory)
-			var sortedSeq iter.Seq2[int64, error]
+			var sortedSeq utils.CloseableIterator[int64]
 			var err error
 			if tt.heap {
 				runGenerator := NewGoStandarSortRunGenerator(
@@ -747,7 +770,7 @@ func TestSimpleInt64SortLarge(t *testing.T) {
 					cmpDeSer,
 					cmpDeSer,
 					cmpDeSer,
-					MergeHeapFunc[int64, Int64DSCmp],
+					HeapIteratorFactory[int64, Int64DSCmp],
 					runGenerator,
 					readFactory,
 					writeFactory,
@@ -776,7 +799,7 @@ func TestSimpleInt64SortLarge(t *testing.T) {
 					cmpDeSer,
 					cmpDeSer,
 					cmpDeSer,
-					MergeTournamentFunc[int64, Int64DSCmp],
+					TournamentIteratorFactory[int64, Int64DSCmp],
 					runGenerator,
 					readFactory,
 					writeFactory,
@@ -797,7 +820,11 @@ func TestSimpleInt64SortLarge(t *testing.T) {
 			previous := int64(-1)
 			count := 0
 			start := time.Now()
-			for r, err := range sortedSeq {
+			for {
+				r, ok, err := sortedSeq.Next()
+				if !ok {
+					break
+				}
 				if err != nil {
 					t.Fatalf("read failed: %v", err)
 				}
@@ -810,8 +837,60 @@ func TestSimpleInt64SortLarge(t *testing.T) {
 			if count != elementsCount {
 				t.Fatalf("expected to read %d records, but got %d", elementsCount, count)
 			}
+			sortedSeq.Close()
 			duration := time.Since(start)
 			t.Logf("Last Merge %s", duration)
 		})
 	}
+}
+
+// Simple Test iterator over slices
+type SliceIteratorInt64 struct {
+	s   []int64
+	idx int
+}
+
+func NewSliceIterator(s []int64) *SliceIteratorInt64 {
+	return &SliceIteratorInt64{
+		s:   s,
+		idx: 0,
+	}
+}
+
+func (s *SliceIteratorInt64) Next() (int64, bool, error) {
+	if s.idx < len(s.s) {
+		next := s.s[s.idx]
+		s.idx++
+		return next, true, nil
+	}
+	return 0, false, nil
+
+}
+
+func (s *SliceIteratorInt64) Close() error {
+	s.idx = 0
+	s.s = nil
+	return nil
+}
+
+func TestIteratorBasedMergeFunction(t *testing.T) {
+	iterators := []utils.CloseableIterator[int64]{
+		NewSliceIterator([]int64{2, 5, 6, 9}),
+		NewSliceIterator([]int64{3, 7, 10}),
+		NewSliceIterator([]int64{1, 4, 8, 12, 13}),
+		NewSliceIterator([]int64{0, 11}),
+	}
+	resIt, err := TournamentIteratorFactory(iterators, Int64DSCmp{})
+	if err != nil {
+		t.Fatalf("err %v", err)
+	}
+	idx := int64(0)
+	for v := range utils.IteratorToSeq(resIt) {
+		if idx != v {
+			t.Fatalf("expected %d got %d", idx, v)
+		}
+		t.Log(v)
+		idx++
+	}
+	resIt.Close()
 }

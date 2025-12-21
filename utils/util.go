@@ -1,6 +1,8 @@
 // Provides utils to work with I/O and serialization
 package utils
 
+import "iter"
+
 // Zero element for generic types
 func Zero[T any]() T {
 	var zero T
@@ -32,4 +34,30 @@ type Serializer[T any] interface {
 // Deserializer function as interface to use in generic algorithms
 type Deserializer[T any] interface {
 	Deserialize(data []byte) (T, error)
+}
+
+// Iterator interface
+type Iterator[T any] interface {
+	Next() (T, bool, error) // returns (value, hasNext, error)
+}
+
+// CloseableIterator interface
+type CloseableIterator[T any] interface {
+	Iterator[T]
+	Close() error
+}
+
+func IteratorToSeq[T any](it Iterator[T]) iter.Seq[T] {
+	return func(yield func(T) bool) {
+		// ignore err on purpose
+		for {
+			t, ok, err := it.Next()
+			if !ok || err != nil {
+				return
+			}
+			if !yield(t) {
+				return
+			}
+		}
+	}
 }
